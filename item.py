@@ -1,32 +1,81 @@
-from db import db
+from flask_restful import Resource, reqparse
+from flask_jwt_extended import (
+    jwt_required, 
+    get_jwt_claims,
+    jwt_optional,
+    get_jwt_identity,
+    fresh_jwt_required
+)
+from models.item import ItemModel
 
-class ItemModel(db.Model):
-    __tablename__ = 'items'
 
-    id = db.Column(db.Integer, primary_key =True)
-    name = db.Column(db.String(80))
-    price = db.Column(db.Float(precision=2))
+class Item(Resource):
+    parser = reqparse.RequestParser()
+    #Can be used to parse html page fields as well
+    parser.add_argument('price',
+        type=float,
+        required=True,
+        help = "This field cannot be left blank!"
+    )
+    parser.add_argument('store_id',
+        type=int,
+        required=True,
+        help = "Every item, needs a store ID"
+    )
 
-    store_id = db.Column(db.Integer, db.ForeignKey('stores.id'))
-    store = db.relationship('StoreModel')
-
-    def __init__(self,name,price,store_id):
-        self.name =name
-        self.price=price
-        self.store_id = store_id
-
-    def json(self):
-        return {"name" : self.name , "price" : self.price}
-
-    @classmethod
-    def find_by_name(cls,name):
-        #SQLAlchemy alternative fro Select * from items where Name = Name
-        return cls.query.filter_by(name=name).first()
+    @jwt_required
+    def get(self,name):
+        item = ItemModel.find_by_name(name)
+        if item:
+            return item.json()
+        return {"message" : "Item not found"}, 404
     
-    def save_to_db(self):
-        db.session.add(self)
-        db.session.commit()
+    @fresh_jwt_required
+    def post(self, name):
+        if ItemModel.find_by_name(name):
+            return {'message' : "An item with name {} already exists!".format(name)}, 400
 
-    def delete_from_db(self):
-        db.session.delete(self)
-        db.session.commit()
+        data = Item.parser.parse_args()
+        item = ItemModel(name,data['price'],data['store_id'])
+
+        try:
+            item.save_to_db()
+        except:
+            return {"message" : "An error occurred inserting the item"}, 500 #Internal Server Error
+        
+        return item.json(), 201
+
+    @jwt_required
+    def delete(self,name):
+        # claims = get_jwt_claims()
+        # if not claims['is_admin']:
+        #     return {"message" : "Admin privilege required."}, 401
+        item =ItemModel.find_by_name(name)
+        if item:
+            item.delete_from_db()
+        return {"message" : "Item Deleted"}
+
+    #idempotent, put can be used to both create or update an existing item
+    def put(self,name):
+        data = Item.parser.parse_args()
+        item = ItemModel.find_by_name(name)
+        if item is None:
+            item = ItemModel(name,data['price'],data['store_id'])
+        else:
+            item.price = data['price']
+            item.store_id = data['store_id']
+        item.save_to_db()
+        return item.json()
+
+
+class ItemList(Resource):
+    @jwt_optional 
+    def get(self):
+        user_id = get_jwt_identity()
+        items = [item.json() for item in ItemModel.query.all()]
+        if user_id:
+            return {"items" : items},200
+        return {
+            "items" : [item['name'] for item in items],
+            "message" : "More data available once you login!"
+        }, 200
